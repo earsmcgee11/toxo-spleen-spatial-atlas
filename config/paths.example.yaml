@@ -1,0 +1,9 @@
+# Example local paths — copy to paths.yaml and edit
+
+# paths.yaml is gitignored; do not commit machine-specific paths.
+
+sc_atlas: "/PATH/TO/sc_spleen_072225.h5ad"
+c2l_infected: "/PATH/TO/cell2location_infected_072225_yk.h5ad"
+c2l_uninfected: "/PATH/TO/cell2location_uninfected_072225_yk.h5ad"
+visium_annotated: "/PATH/TO/1_18_25_visium_annotated.h5ad"
+deconv_combined: "/PATH/TO/processed_deconvolution_sc_spleen_240713_fixed_full_data.h5ad"
