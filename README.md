@@ -4,11 +4,7 @@ Analysis code supporting a single-cell RNA-seq and Visium spatial transcriptomic
 
 ## Citation
 
-Manuscript under review (not yet published). Please cite as:
-
-> Coombs R, Kulkarni Y, Ergen C, Brady M, Han L, Benuck E, Streets A, Yosef N, Robey EA. A single-cell and spatial transcriptomics spleen atlas reveals candidate regulators of CD8 T cell differentiation. Manuscript submitted to *Journal of Experimental Medicine* (2026).
-
-Update with DOI / preprint link when available.
+Manuscript under review (not yet published).
 
 ## Abstract (from manuscript)
 
