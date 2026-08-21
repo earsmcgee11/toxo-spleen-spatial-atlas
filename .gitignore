@@ -41,3 +41,6 @@ renv/library/
 # Secrets / local path configs
 config/paths.yaml
 .env
+
+# Local editor rules
+.cursor/
