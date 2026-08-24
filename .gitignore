@@ -1,0 +1,46 @@
+# Ignore local data and junk — keep this repo code-first
+
+# Data / intermediates
+*.h5ad
+*.h5
+*.rds
+*.RData
+*.loom
+*.cloupe
+*.fastq
+*.fastq.gz
+*.bam
+*.bai
+
+# Local pipeline outputs
+**/outputs/
+
+# Python / R envs
+.venv/
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+renv/library/
+.Rproj.user/
+*.Rhistory
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Large binary dumps (keep small csv/pdf if intentional)
+*.pptx
+*.docx
+*.zip
+*.tar
+*.gz
+
+# Secrets / local path configs
+config/paths.yaml
+.env
+
+# Local editor rules
+.cursor/

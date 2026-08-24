@@ -1,0 +1,253 @@
+---
+title: "CellChat - Table 1 + Fig. 4D inputs"
+output: html_document
+---
+
+# CellChat (Table 1 + Figure 4D inputs)
+
+CellChat identified infection-induced rewiring of signaling networks, marked by a pronounced increase in interactions between myeloid and CD8⁺ T cell populations (Fig. 4D). Restricting our analysis to interactions that exhibited at least a 5-fold infection-induced increase in signaling strength (based on the CellChat “probability” score), we identified receptor–ligand pairs with CD8⁺ T cells as receivers (Table 1). IL27 emerged as an interesting candidate since its transcripts were infection induced and was spatially enriched in red pulp and MZ spatial clusters.
+
+This R notebook builds condition-specific CellChat objects and exports edge/metadata CSVs for the Python Fig. 4D plot (`fig4d_communication_rewiring.ipynb`) and the Table 1 receptor aggregates (CD8 receivers: early active, proliferating, late active; infection-specific or ≥5×).
+
+```{r setup}
+library(CellChat)
+library(SingleCellExperiment)
+library(Matrix)
+library(dplyr)
+
+options(future.globals.maxSize = 4000 * 1024^2)
+
+SCRNA_H5AD <- Sys.getenv("SCRNA_H5AD", unset = "data/scrna_spleen_atlas.h5ad")
+OUT_DIR <- Sys.getenv("CELLCHAT_OUT", unset = "outputs/cellchat")
+dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
+
+GROUP_KEY <- "celltypes_redo"
+COARSE_KEY <- "coarse_redo"
+TIME_KEY <- "timepoint"
+FOLD_CUTOFF <- 5
+
+CD8_RECEIVERS <- c(
+  "CD8-Tcell_early-active",
+  "CD8-Tcell_proliferating",
+  "CD8-Tcell_late-active"
+)
+```
+
+## 1. Load scRNA and run CellChat (uninfected vs infected)
+
+```{r load-and-run}
+sce <- zellkonverter::readH5AD(file = SCRNA_H5AD)
+
+counts <- assay(sce, "X")
+library.size <- Matrix::colSums(counts)
+logcounts(sce) <- log1p(Matrix::t(Matrix::t(counts) / library.size) * 10000)
+
+sce_0wk <- sce[, sce[[TIME_KEY]] == "0wk"]
+sce_3wk <- sce[, sce[[TIME_KEY]] == "3wk"]
+
+cat("Cells by condition:\n")
+print(table(sce[[TIME_KEY]]))
+
+cellchat_0wk <- createCellChat(object = sce_0wk, group.by = GROUP_KEY)
+cellchat_3wk <- createCellChat(object = sce_3wk, group.by = GROUP_KEY)
+
+CellChatDB <- CellChatDB.mouse
+CellChatDB.use <- subsetDB(CellChatDB)
+cellchat_0wk@DB <- CellChatDB.use
+cellchat_3wk@DB <- CellChatDB.use
+
+process_cellchat <- function(cellchat_obj, name) {
+  message("Processing ", name, " ...")
+  cellchat_obj <- subsetData(cellchat_obj)
+  cellchat_obj <- identifyOverExpressedGenes(cellchat_obj)
+  cellchat_obj <- identifyOverExpressedInteractions(cellchat_obj)
+  cellchat_obj <- computeCommunProb(cellchat_obj, population.size = TRUE)
+  cellchat_obj <- filterCommunication(cellchat_obj, min.cells = 5)
+  cellchat_obj <- computeCommunProbPathway(cellchat_obj)
+  cellchat_obj <- aggregateNet(cellchat_obj)
+  cellchat_obj
+}
+
+cellchat_0wk <- process_cellchat(cellchat_0wk, "Uninfected (0wk)")
+cellchat_3wk <- process_cellchat(cellchat_3wk, "Infected (3wk)")
+
+saveRDS(cellchat_0wk, file.path(OUT_DIR, "cellchat_uninfected.rds"))
+saveRDS(cellchat_3wk, file.path(OUT_DIR, "cellchat_infected.rds"))
+```
+
+## 2. Export Fig. 4D inputs (edge lists + fine→coarse metadata)
+
+Aggregated sender→receiver strengths from `cellchat@net$weight`, written as long edge tables (`from`, `to`, `weight`, `condition`). Metadata maps each fine `celltypes_redo` label to `coarse_redo` for the Python circle plot.
+
+```{r export-fig4d-inputs}
+create_edge_list <- function(weight_matrix, condition_name) {
+  edges <- expand.grid(
+    from = rownames(weight_matrix),
+    to = colnames(weight_matrix),
+    stringsAsFactors = FALSE
+  )
+  edges$weight <- as.vector(weight_matrix)
+  edges$condition <- condition_name
+  edges[edges$weight > 0, , drop = FALSE]
+}
+
+edges_uninfected <- create_edge_list(cellchat_0wk@net$weight, "Uninfected")
+edges_infected <- create_edge_list(cellchat_3wk@net$weight, "Infected")
+
+write.csv(edges_uninfected, file.path(OUT_DIR, "cellchat_edges_uninfected.csv"), row.names = FALSE)
+write.csv(edges_infected, file.path(OUT_DIR, "cellchat_edges_infected.csv"), row.names = FALSE)
+
+# Fine → coarse map (same role as cellchat_proper_metadata.csv)
+meta <- as.data.frame(colData(sce))[, c(GROUP_KEY, COARSE_KEY)]
+colnames(meta) <- c("cell_type", "coarse_cluster")
+meta$coarse_cluster <- as.character(meta$coarse_cluster)
+meta$coarse_cluster[meta$coarse_cluster == "Hematopoeitic"] <- "Hematopoietic"
+proper_metadata <- meta %>%
+  distinct(cell_type, coarse_cluster) %>%
+  arrange(coarse_cluster, cell_type)
+
+write.csv(proper_metadata, file.path(OUT_DIR, "cellchat_proper_metadata.csv"), row.names = FALSE)
+
+# Also export weight matrices (optional / debugging)
+write.csv(cellchat_0wk@net$weight, file.path(OUT_DIR, "uninfected_matrix.csv"))
+write.csv(cellchat_3wk@net$weight, file.path(OUT_DIR, "infected_matrix.csv"))
+
+cat("Fig. 4D inputs →", OUT_DIR, "\n")
+cat("  edges uninfected:", nrow(edges_uninfected), "\n")
+cat("  edges infected:", nrow(edges_infected), "\n")
+cat("  metadata rows:", nrow(proper_metadata), "\n")
+```
+
+## 3. Table 1 - CD8 receivers (infection-induced)
+
+Receivers: early-active / proliferating / late-active. Retain infection-specific or ≥`FOLD_CUTOFF`-fold upregulated; exclude self-interactions.
+
+```{r table1-filter}
+interaction_key <- function(df) {
+  paste(df$source, df$target, df$ligand, df$receptor, sep = "_")
+}
+
+comms_inf <- subsetCommunication(cellchat_3wk)
+comms_un <- subsetCommunication(cellchat_0wk)
+comms_inf <- comms_inf[comms_inf$source != comms_inf$target, , drop = FALSE]
+comms_un <- comms_un[comms_un$source != comms_un$target, , drop = FALSE]
+
+cd8_inf <- comms_inf[comms_inf$target %in% CD8_RECEIVERS, , drop = FALSE]
+cd8_un <- comms_un[comms_un$target %in% CD8_RECEIVERS, , drop = FALSE]
+cd8_inf$interaction_key <- interaction_key(cd8_inf)
+cd8_un$interaction_key <- interaction_key(cd8_un)
+
+inf_only_keys <- setdiff(cd8_inf$interaction_key, cd8_un$interaction_key)
+common_keys <- intersect(cd8_inf$interaction_key, cd8_un$interaction_key)
+
+infection_specific <- cd8_inf[cd8_inf$interaction_key %in% inf_only_keys, , drop = FALSE]
+if (nrow(infection_specific) > 0) {
+  infection_specific$interaction_type <- "Infection-Specific"
+  infection_specific$fold_change <- Inf
+}
+
+highly_up <- infection_specific[FALSE, , drop = FALSE]
+if (length(common_keys) > 0) {
+  inf_c <- cd8_inf[cd8_inf$interaction_key %in% common_keys, , drop = FALSE]
+  un_c <- cd8_un[cd8_un$interaction_key %in% common_keys, , drop = FALSE]
+  un_prob <- un_c$prob[match(inf_c$interaction_key, un_c$interaction_key)]
+  fc <- ifelse(un_prob > 0, inf_c$prob / un_prob, ifelse(inf_c$prob > 0, Inf, 1))
+  keep <- !is.na(fc) & fc >= FOLD_CUTOFF & inf_c$prob >= 1e-6
+  highly_up <- inf_c[keep, , drop = FALSE]
+  if (nrow(highly_up) > 0) {
+    highly_up$interaction_type <- "Highly Upregulated"
+    highly_up$fold_change <- fc[keep]
+  }
+}
+
+final_cd8 <- dplyr::bind_rows(infection_specific, highly_up)
+if (nrow(final_cd8) == 0) {
+  stop("No retained CD8-receiver interactions - check CD8_RECEIVERS vs celltypes_redo.")
+}
+final_cd8 <- final_cd8[order(-final_cd8$prob), , drop = FALSE]
+
+cat("Retained CD8-receiver interactions:", nrow(final_cd8), "\n")
+write.csv(
+  final_cd8,
+  file.path(OUT_DIR, "table1_cd8_receiver_interactions_detailed.csv"),
+  row.names = FALSE
+)
+```
+
+## 4. Table 1 - aggregate by receptor (+ Excel workbook)
+
+```{r table1-aggregate}
+table1_by_receptor <- final_cd8 %>%
+  group_by(receptor) %>%
+  summarise(
+    n_interactions = n(),
+    n_senders = n_distinct(source),
+    n_ligands = n_distinct(ligand),
+    n_pathways = n_distinct(pathway_name),
+    n_cd8_receivers = n_distinct(target),
+    aggregated_signaling_strength = sum(prob, na.rm = TRUE),
+    sender_cells = paste(sort(unique(source)), collapse = "; "),
+    ligands = paste(sort(unique(ligand)), collapse = "; "),
+    pathways = paste(sort(unique(pathway_name)), collapse = "; "),
+    cd8_receivers = paste(sort(unique(target)), collapse = "; "),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(aggregated_signaling_strength))
+
+table1_by_target_receptor <- final_cd8 %>%
+  group_by(target, receptor) %>%
+  summarise(
+    sender_cells = paste(sort(unique(source)), collapse = "; "),
+    ligands = paste(sort(unique(ligand)), collapse = "; "),
+    n_interactions = n(),
+    aggregated_signaling_strength = sum(prob, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(aggregated_signaling_strength))
+
+write.csv(table1_by_receptor, file.path(OUT_DIR, "table1_cd8_receptors_aggregated.csv"), row.names = FALSE)
+write.csv(table1_by_target_receptor, file.path(OUT_DIR, "table1_cd8_receptors_by_subset.csv"), row.names = FALSE)
+
+cat("Unique receptors:", nrow(table1_by_receptor), "\n")
+print(head(table1_by_receptor, 15))
+
+if (requireNamespace("openxlsx", quietly = TRUE)) {
+  wb <- openxlsx::createWorkbook()
+  openxlsx::addWorksheet(wb, "CD8_Interactions")
+  openxlsx::writeData(wb, "CD8_Interactions", final_cd8)
+  openxlsx::addWorksheet(wb, "Receptors_Aggregated")
+  openxlsx::writeData(wb, "Receptors_Aggregated", table1_by_receptor)
+  openxlsx::addWorksheet(wb, "Receptors_by_Subset")
+  openxlsx::writeData(wb, "Receptors_by_Subset", table1_by_target_receptor)
+  openxlsx::saveWorkbook(wb, file.path(OUT_DIR, "table1_cd8_receptor_analysis.xlsx"), overwrite = TRUE)
+  message("Wrote table1_cd8_receptor_analysis.xlsx")
+} else {
+  message("Install openxlsx to also write the Excel workbook; CSVs are written either way.")
+}
+```
+
+## 5. Myeloid → CD8 among retained interactions
+
+```{r myeloid-to-cd8}
+myeloid_cd8 <- final_cd8[grepl("Myeloid", final_cd8$source, fixed = TRUE), , drop = FALSE]
+myeloid_cd8_summary <- myeloid_cd8 %>%
+  group_by(source, target, ligand, receptor, pathway_name) %>%
+  summarise(
+    prob = sum(prob, na.rm = TRUE),
+    interaction_type = paste(unique(interaction_type), collapse = "; "),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(prob))
+
+write.csv(
+  myeloid_cd8_summary,
+  file.path(OUT_DIR, "myeloid_to_cd8_retained_interactions.csv"),
+  row.names = FALSE
+)
+print(head(myeloid_cd8_summary, 25))
+```
+
+## Notes
+
+- Next: run `fig4d_communication_rewiring.ipynb` on the edge + metadata CSVs from `OUT_DIR`.  
+- Requires `CellChat`, `zellkonverter`, `dplyr`; `openxlsx` optional for Excel.
